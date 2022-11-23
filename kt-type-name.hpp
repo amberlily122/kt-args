@@ -3,7 +3,7 @@
 
 #include <string_view>
 
-namespace util {
+namespace kt::util {
   
 template <typename T> constexpr std::string_view type_name();
 
@@ -50,5 +50,5 @@ constexpr std::string_view type_name() {
     return wrapped_name.substr(prefix_length, type_name_length);
 }
 
-} /* namespace util */
+} /* namespace kt::util */
 #endif//type_name_hpp_20221122_194646_PST
