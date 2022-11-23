@@ -31,6 +31,7 @@ SOFTWARE.
 #include <sstream>
 #include <string_view>
 #include <vector>
+#include <map>
 namespace kt::args {
   
 template<typename _T>
@@ -77,16 +78,63 @@ auto opt_is_short(std::string_view _s)
   {
     return _s.size() == 2 && arg_is_short(_s);
   };
+template<typename _T>
+auto err_invalid_value(_T&& _arg_name)
+  {
+    auto msg = std::stringstream {};
+    msg << "argument '" << _arg_name << "' does not accept a value";
+    return std::runtime_error { msg.str() };
+  };
+template<typename _T>
+auto err_invalid_arg(_T&& _arg_name)
+  {
+    auto msg = std::stringstream {};
+    msg << "invalid argument '" << _arg_name << "'";
+    return std::runtime_error { msg.str() };
+  };
+template<typename _T>
+auto err_arg_required(_T&& _arg_name)
+  {
+    auto msg = std::stringstream {};
+    msg << "argument '" << _arg_name << "' requires value";
+    return std::runtime_error { msg.str() };
+  };
+class opt;
+
+auto longest_name(const opt& _opt) -> std::string_view;
+
+class parser;
+
+using value_type    = std::string_view;
+using no_arg        = opt;
+using value_arg     = std::pair<const opt&, const value_type&>;
+using opt_value_arg = std::pair<const opt&, const value_type*>;
+using opt_store     = std::vector<opt>;
+using match_data    = std::pair<const opt&, std::optional<value_type>>; 
+using match_store   = std::vector<match_data>;
+using meta_arg      = std::pair<const opt&, parser&>;
+
+template<typename OS>
+class help_opt;
+
 class opt
 {
   using name_type     = std::string_view;
   using desc_type     = std::string_view;
-  using name_pair     = std::pair<name_type, name_type>;
+  using name_pair     = std::pair<std::optional<name_type>, std::optional<name_type>>;
 public:
-  enum class has_value { no, yes, maybe };
+  using no_value_fn   = std::function<void(const no_arg&)>;
+  using value_fn      = std::function<void(const value_arg&)>;
+  using opt_value_fn  = std::function<void(const opt_value_arg&)>;
+  using meta_value_fn = std::function<void(meta_arg&)>;
+  using sender_fn     = std::variant<no_value_fn, value_fn, opt_value_fn, meta_value_fn>;
 
-  opt(name_type _n, desc_type _d = "", has_value _hv = has_value::no)
-      : opt(name_pair_from(_n), _d, _hv)
+  template<typename _OS>
+  opt(name_type _n, help_opt<_OS> _h, desc_type _d = "")
+      : opt(name_pair_from(_n), _h.sender(), _d)
+    {}
+  opt(name_type _n, sender_fn _fn, desc_type _d = "")
+      : opt(name_pair_from(_n), _fn, _d)
     {}
   static constexpr auto name_pair_from(name_type _ns) -> name_pair
     {
@@ -114,29 +162,65 @@ public:
         if(opt_is_long(first)) 
           { std::swap(first, second); }
         else 
-          { assert(opt_is_short(first)); }
+          { assert(opt_is_short(first) || first.empty()); }
       }
-      return name_pair { std::move(first), std::move(second) };
+      auto result = name_pair {};
+      if(not first.empty()) result.first = first;
+      if(not second.empty()) result.second = second;
+      return result;
     }
   auto short_name() const -> std::optional<name_type> { return short_name_; }
   auto long_name()  const -> std::optional<name_type> { return long_name_; }
+  auto action()     const -> const sender_fn&         { return sender_; }
+
+  auto is_positional() const -> bool { return not short_name().has_value() && not long_name().has_value(); }
+  auto send(const std::optional<value_type>& _value) const -> void
+    {
+      using namespace std;
+      visit
+        ( [&](const auto& _send)
+          {
+            using sender_type = decay_t<decltype(_send)>;
+            if constexpr(is_same_v<sender_type, no_value_fn>)
+            {
+              if(_value.has_value())
+              {
+                throw err_invalid_value(longest_name(*this));
+              }
+              _send(*this);
+            }
+            else 
+            if constexpr(is_same_v<sender_type, value_fn>)
+            {
+              if(not _value.has_value())
+              {
+                throw err_arg_required(longest_name(*this));
+              }
+              _send(value_arg { *this, *_value });
+            }
+            else 
+            if constexpr(is_same_v<sender_type, opt_value_fn>)
+            {
+              _send(opt_value_arg { *this, (_value? &(*_value) : nullptr) });
+            }
+          }
+        , action()
+        );
+    }
+  auto desc() const -> const desc_type& { return desc_; }
 private:
-  opt(name_pair _ns, desc_type _d, has_value _hv)
+  opt(name_pair _ns, sender_fn _fn, desc_type _d)
       : short_name_ (std::move(_ns.first))
       , long_name_  (std::move(_ns.second))
+      , sender_     (_fn)
       , desc_       (_d)
-      , has_value_  (_hv)
     {}
   std::optional<name_type>  short_name_;
   std::optional<name_type>  long_name_;
+  sender_fn                 sender_;
   desc_type                 desc_;
-  has_value                 has_value_;
 };
 
-using value_type    = std::string_view;
-using no_arg        = opt;
-using value_arg     = std::pair<const opt&, value_type>;
-using opt_value_arg = std::pair<const opt&, value_type*>;
 
 auto longest_name(const opt& _opt) -> std::string_view
 {
@@ -271,83 +355,71 @@ auto variant_ref(std::variant<_Ts...>& _var)
       detail::variant_ref<0>(_var, _varg, msg); 
     };
   }
-using delay_fn      = std::function<void(void)>;
-using delay_stack   = std::vector<std::pair<const opt*, delay_fn>>;
+
 
 class parser
 {
 private:
-  using no_value_fn   = std::function<void(const no_arg&)>;
-  using value_fn      = std::function<void(const value_arg&)>;
-  using opt_value_fn  = std::function<void(const opt_value_arg&)>;
-  using sender_fn     = std::variant<no_value_fn, value_fn, opt_value_fn>;
   using positional_fn = std::function<void(value_type)>;
-  using opt_to_fn     = std::pair<opt, sender_fn>;
-  using opt_store     = std::vector<opt_to_fn>;
+  template<typename _FN>
+  static constexpr auto sender_is_meta()
+    {
+      using fn_type = std::decay_t<_FN>;
+      return std::is_same_v<fn_type, opt::meta_value_fn>;
+    }
   template<typename _FN>
   static constexpr auto sender_has_value()
     {
       using fn_type = std::decay_t<_FN>;
-      return std::is_same_v<fn_type, value_fn>;
+      return std::is_same_v<fn_type, opt::value_fn>;
     }
   template<typename _FN>
   static constexpr auto sender_has_opt_value()
     {
       using fn_type = std::decay_t<_FN>;
-      return std::is_same_v<fn_type, opt_value_fn>;
+      return std::is_same_v<fn_type, opt::opt_value_fn>;
     }
 public:
-  template<typename _FN>
-  auto operator()(_FN&& _fn) -> parser&
+  auto matches() const -> const match_store& { return matches_; }
+  auto add_match(const opt& _opt, std::optional<value_type> _value) -> void
     {
-      positional_fn_  = _fn;
-      return *this;
+      matches_.emplace_back(_opt, _value);
     }
-  template<typename _FN>
-  auto operator()(opt _o, _FN&& _fn) -> parser&
+  auto send()    const -> void
+    {
+      if(not stop_parsing_)
+      {
+        for(const auto& match : matches_)
+        {
+          const auto& [opt, value] = match;
+          opt.send(value);
+        }
+      }
+    }
+  auto operator()(const positional_fn& _fn)
+    {
+    }
+  auto operator()(opt _o) -> parser&
     {
       using namespace std;
-      static_assert(not (is_invocable_v<_FN, value_arg> && is_invocable_v<_FN, opt_value_arg>));
-      opts_.emplace_back(opt_to_fn { _o, _fn });
+      opts_.emplace_back(_o);
       return *this;
     }
-  auto operator()(int _ac, char* _av[])
+  auto parse(int _ac, char* _av[]) -> parser& 
     {
+      stop_parsing_ = false;
       using namespace std;
-      auto stack = delay_stack {};
+      matches_.clear();
       auto args     = span<const char*> { (const char**)_av, (size_t)_ac };
       auto arg_iter = args.begin();
-      auto err_invalid_value =
-        [](auto&& _arg_name)
-        {
-          // no next arg!  throw error
-          auto msg = stringstream {};
-          msg << "argument '" << _arg_name << "' does not accept a value";
-          return std::runtime_error { msg.str() };
-        };
-      auto err_invalid_arg = 
-        [](auto&& _arg_name)
-        {
-          // no next arg!  throw error
-          auto msg = stringstream {};
-          msg << "invalid argument '" << _arg_name << "'";
-          return std::runtime_error { msg.str() };
-        };
-      auto err_arg_required = 
-        [](auto&& _arg_name)
-        {
-          // no next arg!  throw error
-          auto msg = stringstream {};
-          msg << "argument '" << _arg_name << "' requires value";
-          return std::runtime_error { msg.str() };
-        };
       auto parse_short = 
         [&](auto arg) -> void
         {
           auto compare = string { "--" };
           bool stop_parsing_short_arg = false;
-          for(size_t arg_idx = 1; arg_idx < arg.size() && stop_parsing_short_arg == false; ++arg_idx)
+          for(size_t arg_idx = 1; arg_idx < arg.size(); ++arg_idx)
           {
+            if(stop_parsing_ || stop_parsing_short_arg) break;
             auto extract_short_value =
               [&]() -> optional<string_view>
               {
@@ -356,7 +428,7 @@ public:
                 // arg
                 auto next_idx = arg_idx + 1;
                 // if we have more short opt chars available...
-                if(next_idx != arg.size())
+                if(next_idx < arg.size())
                 {
                   // ...extract the value from it
                   auto value_tmp = arg.substr(next_idx);   
@@ -393,40 +465,49 @@ public:
               };
             compare[1] = arg[arg_idx];
             auto found_match = false;
-            for(const auto& opt_entry : opts_)
+            for(const auto& opt : opts_)
             {
-              const auto& opt = opt_entry.first;
               const auto& opt_name = opt.short_name();
               if(opt_name.has_value() && *opt_name == compare)
               {
                 found_match = true;
-                const auto& action = opt_entry.second;
-                visit
+                const auto& opt_action = opt.action();
+                std::visit
                   ( [&](auto&& _send)
                     {
                       using fn_type = decay_t<decltype(_send)>;
                       if constexpr(sender_has_value<fn_type>())
                       {
                         auto value = extract_short_value();
-                        if(not value.has_value())
-                        {
-                          throw err_arg_required(compare);
-                        }
-                        _send(value_arg(opt, *value));
+                        //if(not value.has_value())
+                        //{
+                        //  throw err_arg_required(compare);
+                        //}
+                        add_match(opt, value);
                       }
                       else if constexpr(sender_has_opt_value<fn_type>())
                       {
                         auto value = extract_short_value();
-                        _send(opt_value_arg(opt, value? &(*value) : nullptr));
-                        //delay_send(stack, _send, opt_value_arg(opt, value? &(*value) : nullptr));
+                        //_send(opt_value_arg(opt, value? &(*value) : nullptr));
+                        add_match(opt, value);
+                      }
+                      else if constexpr(sender_is_meta<fn_type>())
+                      {
+                        auto meta     = meta_arg   { opt, *this };
+                        _send(meta);
                       }
                       else
                       {
-                        //delay_send(stack, _send, opt);
-                        _send(opt);
+                        auto next_idx = arg_idx + 1;
+                        if(next_idx < arg.size() && arg[next_idx] == '=')
+                        {
+                          throw err_invalid_value(compare);
+                        }
+                        //_send(opt);
+                        add_match(opt, nullopt);
                       }
                     }
-                  , action
+                  , opt_action
                   );
 
               }
@@ -470,9 +551,8 @@ public:
               return next_arg;
             };
           auto found_match = false;
-          for(auto& opt_entry : opts_)
+          for(auto& opt : opts_)
           {
-            auto opt = opt_entry.first;
             auto opt_name = opt.long_name();
             if(opt_name.has_value() && *opt_name == arg_name)
             {
@@ -484,29 +564,32 @@ public:
                     if constexpr(sender_has_value<fn_type>())
                     {
                       auto value = extract_long_value();        
-                      if(not value.has_value())
-                      {
-                        throw err_arg_required(*opt_name);
-                      }
-                      //delay_send(stack, _send, value_arg(opt, *value));
-                      _send(value_arg(opt, *value));
+                      //if(not value.has_value())
+                      //{
+                      //  throw err_arg_required(*opt_name);
+                      //}
+                      add_match(opt, value);
                     }
                     else if constexpr(sender_has_opt_value<fn_type>())
                     {
                       auto value = extract_long_value(); 
-                      //delay_send(stack, _send, opt_value_arg(opt, value? &(*value) : nullptr));
-                      _send(opt_value_arg(opt, value? &(*value) : nullptr));
+                      add_match(opt, value);
+                    }
+                    else if constexpr(sender_is_meta<fn_type>())
+                    {
+                      auto meta     = meta_arg   { opt, *this };
+                      _send(meta);
                     }
                     else
                     {
-                      if(arg_value.has_value())
-                      {
-                        throw err_invalid_value(arg_name);
-                      }
-                      _send(opt);
+                      //if(arg_value.has_value())
+                      //{
+                      //  throw err_invalid_value(arg_name);
+                      //}
+                      add_match(opt, nullopt);
                     }
                   }
-                , opt_entry.second
+                , opt.action()
                 );
             }
           }
@@ -515,10 +598,21 @@ public:
             throw err_invalid_arg(arg_name);
           }
         };
+      auto parse_positional = [&](auto arg)
+        {
+          for(const auto& opt : opts_)
+          {
+            if(opt.is_positional())
+            {
+              add_match(opt, arg);
+            }
+          }
+        };
       auto exec_name = *arg_iter;
       ++arg_iter;
       while(arg_iter != args.end())
       {
+        if(stop_parsing_) break;
         auto arg = string_view { *arg_iter };
         if(arg_is_short(arg))
         {
@@ -530,30 +624,82 @@ public:
         }
         else
         {
+          parse_positional(arg);
         }
         ++arg_iter;
       }
-      //return stack_handler { std::move(stack) };
       return *this;
     }
-  auto operator()() -> void
+  auto operator()(int _ac, char* _av[]) -> parser& 
     {
-      for(const auto& entry : stack_)
-      {
-        const auto& opt   = *entry.first;
-        const auto& send  = entry.second;
-        send();
-      }
+      return parse(_ac, _av);
     }
-  template<typename _OS>
-  auto show_help(_OS& _os) -> void
-    {
-      _os << "HELP!?!?\n";
-    }
+  
+  
+  
+  
+  
+  auto opts() const -> const opt_store& { return opts_; }
+  auto stop_parsing() { stop_parsing_ = true; }
 private:
-  positional_fn   positional_fn_;
   opt_store       opts_;
-  delay_stack     stack_;
+  match_store     matches_;
+  opt*            help_opt_ = nullptr;
+  bool            stop_parsing_ = false;
+};
+template<typename OS>
+class help_opt
+{
+public:
+  using ostream = OS;
+  explicit help_opt(ostream& _os) : ostream_(_os) {}
+
+  auto sender() 
+  {
+    return [ostream_ref = std::ref(this->ostream_)](meta_arg& _meta)
+      {
+        auto& ostream = ostream_ref.get();
+        auto name_list = [](const auto& _opt)
+          {
+            auto has_short_name = _opt.short_name().has_value();
+            auto has_long_name  = _opt.long_name().has_value();
+            auto has_both_names = has_short_name && has_long_name;
+            auto ss = std::stringstream {};
+            ss << (has_short_name? _opt.short_name().value() : "")
+               << (has_both_names? ", " : "")
+               << (has_long_name?  _opt.long_name() .value() : "")
+               ;
+            return ss.str();
+          };
+        auto& [help_opt, parser]  = _meta;
+        parser.stop_parsing();
+        constexpr auto names_column     = size_t { 0 };
+        constexpr auto desc_column      = size_t { 1 };
+        constexpr auto min_padding      = 4;
+                  auto padding          = std::string(min_padding, ' ');
+        using column_type = std::string;
+        using row_type    = std::tuple<column_type, column_type>;
+        using table_type  = std::vector<row_type>;
+        table_type table;
+
+        auto max_names_width = size_t { 0 };
+        for(const auto& opt : parser.opts())
+        {
+          auto& row = table.emplace_back(row_type { name_list(opt), opt.desc() });
+          const auto& [names, desc] = row;
+          max_names_width = std::max(max_names_width, names.size());
+        }
+        for(const auto& row : table)
+        {
+          const auto& [names, desc] = row;
+          size_t pad_size   = max_names_width - names.size();
+          auto extra_pad  = std::string( pad_size, ' ' );
+          ostream << padding << names << padding << extra_pad << desc << "\n";
+        }
+      };
+  }
+private:
+  ostream&  ostream_;
 };
 
 } /* namespace kt::args */
