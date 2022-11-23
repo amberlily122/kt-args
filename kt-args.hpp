@@ -1,13 +1,37 @@
+/* kt-args.hpp
+
+MIT License
+
+Copyright (c) 2022 amberlily122
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
 #ifndef args_hpp_20221122_134427_PST
 #define args_hpp_20221122_134427_PST
-#include "type_name.hpp"
+#include "kt-type-name.hpp"
 #include <boost/lexical_cast.hpp>
 #include <optional>
 #include <span>
 #include <sstream>
 #include <string_view>
 #include <vector>
-namespace args {
+namespace kt::args {
   
 template<typename _T>
 auto type_name() -> std::string_view
@@ -250,81 +274,6 @@ auto variant_ref(std::variant<_Ts...>& _var)
 using delay_fn      = std::function<void(void)>;
 using delay_stack   = std::vector<std::pair<const opt*, delay_fn>>;
 
-//class stack_handler 
-//{
-//  using find_result = std::pair<bool, const delay_fn&>;
-//public:
-//  stack_handler(delay_stack&& _s)
-//      : stack_(std::move(_s))
-//    {}
-//
-//  auto find_opt(std::string_view _name) const -> find_result
-//    {
-//      using namespace std;
-//      auto match_short = [&](auto&& _opt)
-//        {
-//          return _opt.short_name().has_value() && _opt.short_name().value() == _name;
-//        };
-//      auto match_long = [&](auto&& _opt)
-//        {
-//          return _opt.long_name().has_value() && _opt.long_name().value() == _name;
-//        };
-//      auto search_stack = [&](auto&& _match)
-//        {
-//          for(const auto& entry : stack_)
-//          {
-//            if(_match(*entry.first))
-//            {
-//              const auto& fn = entry.second;
-//              return find_result{true, fn};
-//            }
-//          }
-//          return find_result{false, delay_fn{[]{}}};
-//        };
-//      if(opt_is_short(_name))
-//      {
-//        return search_stack(match_short);
-//      }
-//      else if(opt_is_long(_name))
-//      {
-//        return search_stack(match_long);
-//      }
-//      else
-//      {
-//        return find_result{false, delay_fn{[]{}}};
-//      }
-//    }
-//  auto halt_on(std::string_view _n) -> stack_handler&
-//    {
-//      if(status_ != runlevel::stopped)
-//      {
-//        auto result = find_opt(_n);
-//        if(result.first)
-//        {
-//          const auto& call = result.second;
-//          call();
-//          status_ = runlevel::stopped;
-//        }
-//      }
-//      return *this;
-//    }
-//  auto operator()() -> void
-//    {
-//      if(status_ != runlevel::stopped)
-//      {
-//        for(const auto& entry : stack_)
-//        {
-//          auto call = entry.second;
-//          call();
-//        } 
-//      }
-//    }
-//private:
-//  enum class runlevel { stopped, running };
-//  runlevel      status_ = runlevel::running;
-//  delay_stack   stack_;
-//};
-
 class parser
 {
 private:
@@ -362,18 +311,6 @@ public:
       opts_.emplace_back(opt_to_fn { _o, _fn });
       return *this;
     }
-  //template<typename _FN, typename _VT>
-  //auto delay_send(delay_stack& _stack, _FN&& _send, _VT&& _value) -> void
-  //  {
-  //    if constexpr(std::is_same_v<std::decay_t<_VT>, opt>)
-  //    {
-  //      _stack.push_back(std::make_pair(&_value, [&_send, _value] { _send(_value); }));
-  //    }
-  //    else
-  //    {
-  //      _stack.push_back(std::make_pair(&_value.first, [&_send, _value] { _send(_value); }));
-  //    }
-  //  };
   auto operator()(int _ac, char* _av[])
     {
       using namespace std;
@@ -619,5 +556,5 @@ private:
   delay_stack     stack_;
 };
 
-} /* namespace args */
+} /* namespace kt::args */
 #endif//args_hpp_20221122_134427_PST
